@@ -1,59 +1,62 @@
 import numpy as np
+from constants import G
+
+def fibonacci_sphere(samples=1):
+    points = []
+    phi = np.pi * (3. - np.sqrt(5.))  # golden angle in radians
+
+    for i in range(samples):
+        y = 1 - (i / float(samples - 1)) * 2  # y goes from 1 to -1
+        radius = np.sqrt(1 - y*y)  # radius at y
+
+        theta = phi * i  # golden angle increment
+
+        x = np.cos(theta) * radius
+        z = np.sin(theta) * radius
+
+        points.append((x, y, z))
+
+    return points
+
+class Part:
+    def __init__(self, pos, vel, radius, mass):
+        self.pos = pos
+        self.vel = vel
+        self.radius = radius
+        self.mass = mass
 
 class body:
-    def __init__(
-        self,
-        name,
-        mass,
-        radius,
-        type=None,
-        color=None,
-        parent_body=None,
-        pos=None,
-        velocity=None,
-        E=0,
-        L=0,
-        semi_major_axis=0,
-        semi_minor_axis=0,
-        eccentricity=0,
-        inclination=0,
-        longitude_of_ascending_node=0,
-        argument_of_perigee=0,
-        true_anomaly=0,
-        rotational_period=0,
-        tilt=0,
-        current_rotation_angle=0
-    ):
+    density_factor = 0.01  # Class variable, shared among all instances of the class
+
+    def __init__(self, name, pos, mass, radius, color, type, parent=None, velocity=np.array([0.0, 0.0, 0.0])):
         self.name = name
-        self.mass = mass
+        self.pos = np.array(pos)
         self.radius = radius
-        self.type = type
         self.color = color
-        self.parent_body = parent_body
+        self.type = type
+        self.parent = parent
+        self.vel = np.array(velocity)
+        self.parts = self.generate_parts(mass) if self.type != "star" else []
 
-        # Orbital elements
-        self.semi_major_axis = semi_major_axis
-        self.eccentricity = eccentricity
-        self.inclination = inclination
-        self.longitude_of_ascending_node = longitude_of_ascending_node
-        self.argument_of_perigee = argument_of_perigee
-        self.true_anomaly = true_anomaly
+    def generate_parts(self, total_mass):
+        volume = 4/3 * np.pi * self.radius**3  # Volume of the body
+        density = total_mass / volume  # Density of the body
+        num_parts = max(1, int(density * body.density_factor))  # Use the class variable density_factor
+        part_mass = total_mass / num_parts
+        part_radius = self.radius / num_parts**(1/3)  # Assume parts are uniform and fill the body
 
-        # Rotational elements
-        self.rotational_period = rotational_period
-        self.tilt = tilt
-        self.current_rotation_angle = current_rotation_angle
+        # Use the fibonacci_sphere function to generate part positions
+        part_positions = fibonacci_sphere(num_parts)
+        parts = []
+        for pos in part_positions:
+            # Randomly adjust the radius of each position and scale by the body radius
+            r = np.random.uniform(0, 1)
+            part_pos = self.pos + np.array(pos) * self.radius * r
+            part = Part(part_pos, self.vel, part_radius, part_mass)
+            parts.append(part)
+        
+        return parts
 
-        # Position and velocity
-        if pos is None:
-            self.pos = np.zeros(3)
-        else:
-            self.pos = np.array(pos)
-
-        if velocity is None:
-            self.vel = np.zeros(3)
-        else:
-            self.vel = np.array(velocity)
-
-    def surface_gravity(self):
-        return G * self.mass / (self.radius ** 2)
+    # Add a method to calculate the mass
+    def mass(self):
+        return sum(part.mass for part in self.parts)

@@ -1,87 +1,118 @@
-from constants import G
-from planet import bodies, sun
+from constants import G, k
+from planet import bodies
 import numpy as np
+from body import body
+from multiprocessing import Pool
 
-def calculate_net_force(target_body, softening = 0):
+def calculate_net_force_wrapper(args):
+    return calculate_net_force(*args)
+
+def calculate_net_force(target_body):
     net_force = np.array([0.0, 0.0, 0.0])
     for body in bodies:
         if body != target_body:
             r = body.pos - target_body.pos
-            r_mag = np.linalg.norm(r) + softening # Added softening here
-            force_mag = G * target_body.mass * body.mass / r_mag**2
+            r_mag = np.linalg.norm(r)
+            if r_mag == 0:  # bodies are at the same position
+                continue
+            force_mag = G * target_body.mass() * body.mass() / r_mag**2
             force = force_mag * r / r_mag
             net_force += force
     return net_force
 
-def run_simulation(timescale_seconds):
-    for body in bodies:
-        # Half-step velocity update
-        net_force = calculate_net_force(body)
-        acceleration = net_force / body.mass
-        body.vel += 0.5 * acceleration * timescale_seconds
+def calculate_net_force_on_part_wrapper(args):
+    return calculate_net_force_on_part(*args)
 
-        # Full-step position update
+def calculate_net_force_on_part(target_part, all_parts):
+    restitution = 0.2  # Partially inelastic collisions
+    
+    net_force = np.array([0.0, 0.0, 0.0])
+    for part in all_parts:
+        if part != target_part:
+            r = part.pos - target_part.pos
+            r_mag = np.linalg.norm(r)
+            if r_mag == 0:  # parts are at the same position
+                continue
+            
+            force_mag = G * target_part.mass * part.mass / r_mag**2
+            
+            force = force_mag * r / r_mag
+            net_force += force
+
+            # Impulse-based collision response
+            overlap = part.radius + target_part.radius - r_mag
+            if overlap > 0:  # if there is a collision
+                normal = r / r_mag  # normal vector
+                relative_velocity = target_part.vel - part.vel
+                impulse_magnitude = -(1 + restitution) * np.dot(relative_velocity, normal) / (1/target_part.mass + 1/part.mass)
+                impulse = impulse_magnitude * normal
+
+                # Apply the impulse
+                target_part.vel += impulse / target_part.mass
+                part.vel -= impulse / part.mass
+
+    return net_force
+def run_simulation(timescale_seconds):
+    bodies_copy = bodies[:]
+    all_parts = [part for body in bodies_copy for part in body.parts]
+    restitution = 0.2  # Partially inelastic collisions
+
+    # Create a pool of worker processes for bodies
+    with Pool() as pool:
+        # Calculate forces on bodies in parallel
+        forces = pool.map(calculate_net_force_wrapper, [(body,) for body in bodies_copy])
+
+    for body, force in zip(bodies_copy, forces):
+        acceleration = force / body.mass()
+        if body.name != "Sun":
+            body.vel += 0.5 * acceleration * timescale_seconds
+
         body.pos += body.vel * timescale_seconds
 
-        # Calculate orbital parameters relative to parent body
-        if body.parent_body is not None:
-            calculate_orbital_parameters(body, body.parent_body)
+        # Create a pool of worker processes for parts
+        with Pool() as pool:
+            # Calculate forces on parts in parallel
+            part_forces = pool.map(calculate_net_force_on_part_wrapper, [(part, all_parts) for part in body.parts])
 
-    for body in bodies:
-        # Second half-step velocity update
-        net_force = calculate_net_force(body)
-        acceleration = net_force / body.mass
-        body.vel += 0.5 * acceleration * timescale_seconds
+        for part, force in zip(body.parts, part_forces):
+            # Update velocities and positions of parts
+            acceleration = force / part.mass
+            part.vel += 0.5 * acceleration * timescale_seconds
+            part.pos += part.vel * timescale_seconds
 
+    # Check for collisions and resolve them
+    for i in range(len(all_parts)):
+        for j in range(i + 1, len(all_parts)):
+            part1 = all_parts[i]
+            part2 = all_parts[j]
+            r = part2.pos - part1.pos
+            r_mag = np.linalg.norm(r)
+            overlap = part1.radius + part2.radius - r_mag
+            if overlap > 0:  # if there is a collision
+                normal = r / r_mag  # normal vector
+                relative_velocity = part1.vel - part2.vel
+                impulse_magnitude = -(1 + restitution) * np.dot(relative_velocity, normal) / (1/part1.mass + 1/part2.mass)
+                impulse = impulse_magnitude * normal
 
-def calculate_orbital_position(body, focus_object):
-    # Get the position of the body relative to the focus_object
-    relative_pos = body.pos[:2] - focus_object.pos[:2]
+                # Apply the impulse
+                part1.vel += impulse / part1.mass
+                part2.vel -= impulse / part2.mass
 
-    # Calculate the angle in radians
-    angle_rad = np.arctan2(relative_pos[1], relative_pos[0])
+    # Repeat for second half-step velocity update
+    with Pool() as pool:
+        forces = pool.map(calculate_net_force_wrapper, [(body,) for body in bodies])
 
-    # If you want the angle in degrees instead of radians
-    angle_deg = np.degrees(angle_rad)
+    for body, force in zip(bodies, forces):
+        acceleration = force / body.mass()
+        if body.name != "Sun":
+            body.vel += 0.5 * acceleration * timescale_seconds
 
-    return angle_rad, angle_deg
+        # Create a pool of worker processes for parts
+        with Pool() as pool:
+            # Calculate forces on parts in parallel
+            part_forces = pool.map(calculate_net_force_on_part_wrapper, [(part, all_parts) for part in body.parts])
 
-def calculate_relative_vectors(body, focus_object):
-    body.relative_pos = body.pos - focus_object.pos
-    body.relative_vel = body.vel - focus_object.vel
-
-def calculate_energy_and_momentum(body, focus_object):
-    body.E = 0.5 * np.dot(body.relative_vel, body.relative_vel) - G * focus_object.mass / np.linalg.norm(body.relative_pos)
-    body.L = np.linalg.norm(np.cross(body.relative_pos, body.relative_vel))
-
-def calculate_semi_major_axis(body, focus_object):
-    body.semi_major_axis = -G * focus_object.mass / (2 * body.E)
-
-def calculate_eccentricity(body, focus_object):
-    # The standard gravitational parameter
-    mu = G * (body.mass + focus_object.mass)
-    
-    # The distance between the body and the focus object
-    r = np.linalg.norm(body.pos - focus_object.pos)
-    
-    # The speed of the body
-    v = np.linalg.norm(body.vel)
-    
-    # The specific relative angular momentum
-    h = np.linalg.norm(np.cross(body.pos - focus_object.pos, body.vel))
-    
-    # The specific orbital energy
-    epsilon = v**2 / 2 - mu / r
-    
-    # The eccentricity of the orbit
-    body.eccentricity = np.sqrt(1 + 2 * epsilon * h**2 / mu**2)
-
-def calculate_semi_minor_axis(body):
-    body.semi_minor_axis = body.semi_major_axis * np.sqrt(1 - body.eccentricity**2)
-
-def calculate_orbital_parameters(body, focus_object):
-    calculate_relative_vectors(body, focus_object)
-    calculate_energy_and_momentum(body, focus_object)
-    calculate_semi_major_axis(body, focus_object)
-    calculate_eccentricity(body, focus_object)
-    calculate_semi_minor_axis(body)
+        for part, force in zip(body.parts, part_forces):
+            # Second half-step velocity update for parts
+            acceleration = force / part.mass
+            part.vel += 0.5 * acceleration * timescale_seconds
